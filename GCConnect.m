@@ -13,7 +13,7 @@
 #define HTTPHEADER @{@"Content-Type": @"application/json", @"Accept": @"application/json"}
 #define KEYLENGTH 1192
 #define KEYSIZE @2048
-#define ENC kCFStringEncodingUTF8
+#define ENC NSUTF8StringEncoding
 
 @implementation GCConnect
 
@@ -39,16 +39,19 @@
 {
 	NSString *header = [NSString stringWithFormat: HEADERFORMAT,
 						 self.algorythm];
-	NSString *plString = [NSString stringWithFormat: PAYLOADFORMAT,
+	NSString *payload = [NSString stringWithFormat: PAYLOADFORMAT,
 						  self.email,
 						  self.scope,
 						  self.auth_url,
 						  time(NULL) + self.lifetime,
 						  time(NULL)];
-
-	NSString *fullString = [self fulldataWithPayload: plString andHeader: header];
+	NSString *fullString = [self fulldataWithPayload: payload andHeader: header];
 	NSData *fullData = [fullString dataUsingEncoding: ENC];
 	SecKeyRef key = [self secKeyWithError: error];
+	if (!key)
+	{
+		return;
+	}
 	NSString *signString = [self signatureData: fullData withKey: key error: error];
 	NSString *signedRequestData = [@[fullString, signString] componentsJoinedByString: @"."];
 	NSURL *authURL = [NSURL URLWithString: self.auth_url];
@@ -106,27 +109,33 @@
 	secret = [nonArmoredKey stringByReplacingOccurrencesOfString: @"\n" withString: @""];
 
 	NSData *key = [NSData.alloc initWithBase64EncodedString: secret
-													options: NSDataBase64DecodingIgnoreUnknownCharacters];
-
-	if (key.length > KEYLENGTH)
-	{
-		key = [NSData dataWithBytes: &key.bytes[key.length - KEYLENGTH]
-							 length: KEYLENGTH];
-	}
+													options: 0];
 
 	NSDictionary *attributes = @{(NSString *)kSecAttrKeyType: (NSString *)kSecAttrKeyTypeRSA,
 								 (NSString *)kSecAttrKeyClass: (NSString *)kSecAttrKeyClassPrivate,
 								 (NSString *)kSecAttrKeySizeInBits: KEYSIZE};
+
 	CFErrorRef cfError = nil;
-	SecKeyRef secKey = SecKeyCreateWithData((CFDataRef)key,
-											(CFDictionaryRef)attributes,
-											&cfError);
-	if (cfError)
+	SecKeyRef secKey = nil;
+
+	// brute force, instead of a thousand lines :В
+	for (long chunkLength = KEYLENGTH; chunkLength--;)
 	{
-		*error = (__bridge NSError *)cfError;
-		return nil;
+		for (long i = key.length - chunkLength; i >= 0; --i)
+		{
+			NSData *tempKey = [NSData dataWithBytes: &key.bytes[i]
+											 length: chunkLength];
+			secKey = SecKeyCreateWithData((CFDataRef)tempKey,
+										  (CFDictionaryRef)attributes,
+										  &cfError);
+			if (secKey)
+			{
+				return secKey;
+			}
+		}
 	}
-	return secKey;
+	*error = (__bridge NSError *)cfError;
+	return nil;
 }
 
 - (NSString *)signatureData: (NSData *)data withKey: (SecKeyRef)key error: (NSError **)error
